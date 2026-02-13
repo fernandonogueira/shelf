@@ -1,0 +1,127 @@
+schemaVersion: 1
+kind: command
+metadata:
+  name: Port Forward
+  slug: port-forward
+  description: Interactive Kubernetes port-forward with fzf selection
+  tags:
+    - kubernetes
+    - networking
+defaults:
+  shell: /bin/bash
+  timeout: 24h
+args:
+  positional:
+    - name: query
+      description: Grep filter for resources
+      required: false
+  flags:
+    - name: namespace
+      short: "n"
+      description: Target Kubernetes namespace
+      type: string
+    - name: all-namespaces
+      short: "A"
+      description: Query all namespaces
+      type: bool
+    - name: random-port
+      short: "r"
+      description: Bind a random local port
+      type: bool
+    - name: port
+      short: "p"
+      description: Specific local port to bind
+      type: string
+steps:
+  - name: port-forward
+    run:
+      - |
+        set -euo pipefail
+
+        # --- prerequisites ---
+        for cmd in kubectl fzf jq; do
+          if ! command -v "$cmd" &>/dev/null; then
+            echo "Error: $cmd is required but not installed." >&2
+            exit 1
+          fi
+        done
+
+        # --- namespace flags ---
+        NS_FLAG=""
+        ALL_NS='{{index .args "all-namespaces"}}'
+        NS='{{.args.namespace}}'
+
+        if [[ "$ALL_NS" == "true" ]]; then
+          NS_FLAG="--all-namespaces"
+        elif [[ -n "$NS" ]]; then
+          NS_FLAG="--namespace $NS"
+        fi
+
+        # --- collect resources ---
+        collect() {
+          local kind="$1"
+          local jq_filter="$2"
+          kubectl get "$kind" $NS_FLAG -o json 2>/dev/null | jq -r "$jq_filter" 2>/dev/null || true
+        }
+
+        SVC_FILTER='.items[] | . as $r | .spec.ports[]? | "\($r.metadata.namespace) | service | \($r.metadata.name) | \(.port)"'
+        DEPLOY_FILTER='.items[] | . as $r | .spec.template.spec.containers[].ports[]? | "\($r.metadata.namespace) | deployment | \($r.metadata.name) | \(.containerPort)"'
+        POD_FILTER='.items[] | . as $r | (.spec.containers + (.spec.initContainers // []))[] | .ports[]? | "\($r.metadata.namespace) | pod | \($r.metadata.name) | \(.containerPort)"'
+
+        RESULTS=$(
+          {
+            collect services "$SVC_FILTER"
+            collect deployments "$DEPLOY_FILTER"
+            collect pods "$POD_FILTER"
+          } | sort -u
+        )
+
+        if [[ -z "$RESULTS" ]]; then
+          echo "No resources with exposed ports found." >&2
+          exit 1
+        fi
+
+        # --- filter ---
+        QUERY='{{.args.query}}'
+        if [[ -n "$QUERY" ]]; then
+          RESULTS=$(echo "$RESULTS" | grep -i "$QUERY" || true)
+          if [[ -z "$RESULTS" ]]; then
+            echo "No resources matching '$QUERY'." >&2
+            exit 1
+          fi
+        fi
+
+        # --- select via fzf ---
+        HEADER="NAMESPACE | KIND | NAME | PORT"
+        SELECTION=$(echo "$RESULTS" | fzf --header="$HEADER" --height=40% --reverse)
+
+        if [[ -z "$SELECTION" ]]; then
+          exit 0
+        fi
+
+        # --- parse selection ---
+        IFS='|' read -r SEL_NS SEL_KIND SEL_NAME SEL_PORT <<< "$SELECTION"
+        SEL_NS=$(echo "$SEL_NS" | xargs)
+        SEL_KIND=$(echo "$SEL_KIND" | xargs)
+        SEL_NAME=$(echo "$SEL_NAME" | xargs)
+        SEL_PORT=$(echo "$SEL_PORT" | xargs)
+
+        # --- determine local port ---
+        USER_PORT='{{.args.port}}'
+        RANDOM_PORT='{{index .args "random-port"}}'
+
+        if [[ -n "$USER_PORT" ]]; then
+          LOCAL_PORT="$USER_PORT"
+        elif [[ "$RANDOM_PORT" == "true" ]]; then
+          if command -v shuf &>/dev/null; then
+            LOCAL_PORT=$(shuf -i 10000-65535 -n 1)
+          else
+            LOCAL_PORT=$(( (RANDOM % 55535) + 10000 ))
+          fi
+        else
+          LOCAL_PORT="$SEL_PORT"
+        fi
+
+        # --- port-forward ---
+        echo "Forwarding ${SEL_KIND}/${SEL_NAME} :${SEL_PORT} → localhost:${LOCAL_PORT} (namespace: ${SEL_NS})"
+        kubectl port-forward --namespace "$SEL_NS" "${SEL_KIND}/${SEL_NAME}" "${LOCAL_PORT}:${SEL_PORT}"
