@@ -1,0 +1,8 @@
+shelfVersion: 1
+name: fshelf
+description: Personal command libraries
+libraries:
+  kubernetes:
+    name: Kubernetes
+    description: Kubernetes helper commands
+    path: kubernetes
