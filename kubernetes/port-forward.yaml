@@ -9,6 +9,10 @@ metadata:
     - networking
   aliases:
     - pf
+dependencies:
+  - kubectl
+  - fzf
+  - jq
 defaults:
   shell: /bin/bash
   timeout: 24h
