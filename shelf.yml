@@ -6,3 +6,5 @@ libraries:
     name: Kubernetes
     description: Kubernetes helper commands
     path: kubernetes
+    aliases:
+      - k
