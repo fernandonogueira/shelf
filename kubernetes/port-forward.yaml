@@ -3,7 +3,7 @@ kind: command
 metadata:
   name: Port Forward
   slug: port-forward
-  description: Interactive Kubernetes port-forward with fzf selection
+  description: Interactive Kubernetes port-forward with fzf selection.
   tags:
     - kubernetes
     - networking

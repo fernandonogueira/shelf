@@ -1,6 +1,6 @@
 shelfVersion: 1
 name: fshelf
-description: Personal command libraries
+description: Personal command libraries.
 libraries:
   kubernetes:
     name: Kubernetes
