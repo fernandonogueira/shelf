@@ -40,8 +40,7 @@ args:
       type: string
 steps:
   - name: port-forward
-    run:
-      - |
+    run: |
         set -euo pipefail
 
         # --- prerequisites ---
