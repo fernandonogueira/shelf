@@ -1,0 +1,18 @@
+schemaVersion: 1
+kind: command
+metadata:
+  name: Copy Directory Path
+  slug: cp
+  description: Copy current working directory path to clipboard.
+  tags:
+    - directory
+    - clipboard
+dependencies:
+  - pbcopy
+defaults:
+  shell: /bin/bash
+steps:
+  - name: copy-cwd
+    run: |
+        pwd | pbcopy
+        echo "Copied '$(pwd)' to clipboard."

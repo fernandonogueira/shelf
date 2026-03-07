@@ -1,0 +1,91 @@
+schemaVersion: 1
+kind: command
+metadata:
+  name: Delete Pods by Status
+  slug: delete-pods
+  description: Delete pods filtered by status (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
+  tags:
+    - kubernetes
+    - pods
+    - cleanup
+  aliases:
+    - dp
+dependencies:
+  - kubectl
+defaults:
+  shell: /bin/bash
+policy:
+  requireConfirmation: true
+args:
+  positional:
+    - name: status
+      description: Pod status to filter (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
+      required: true
+  flags:
+    - name: namespace
+      short: "n"
+      description: Target Kubernetes namespace.
+      type: string
+    - name: all-namespaces
+      short: "A"
+      description: Query all namespaces.
+      type: bool
+    - name: dry-run
+      short: "d"
+      description: Show what would be deleted without deleting.
+      type: bool
+steps:
+  - name: delete-pods-by-status
+    run: |
+        set -euo pipefail
+
+        STATUS='{{.args.status}}'
+        NS='{{.args.namespace}}'
+        ALL_NS='{{index .args "all-namespaces"}}'
+        DRY_RUN='{{index .args "dry-run"}}'
+
+        # --- namespace flags ---
+        NS_FLAG=""
+        if [[ "$ALL_NS" == "true" ]]; then
+          NS_FLAG="--all-namespaces"
+        elif [[ -n "$NS" ]]; then
+          NS_FLAG="--namespace $NS"
+        fi
+
+        # --- find matching pods ---
+        # Use the STATUS column (3rd column, or 4th with --all-namespaces) to filter.
+        # This handles both pod phases and container statuses like CrashLoopBackOff.
+        if [[ "$ALL_NS" == "true" ]]; then
+          PODS=$(kubectl get pods $NS_FLAG --no-headers 2>/dev/null | awk -v s="$STATUS" '$4 == s {print $1 "/" $2}' || true)
+        else
+          PODS=$(kubectl get pods $NS_FLAG --no-headers 2>/dev/null | awk -v s="$STATUS" '$3 == s {print $1}' || true)
+        fi
+
+        if [[ -z "$PODS" ]]; then
+          echo "No pods found with status '$STATUS'."
+          exit 0
+        fi
+
+        POD_COUNT=$(echo "$PODS" | wc -l | tr -d ' ')
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+          echo "[dry-run] Found $POD_COUNT pod(s) with status '$STATUS':"
+          echo "$PODS"
+          exit 0
+        fi
+
+        echo "Deleting $POD_COUNT pod(s) with status '$STATUS'..."
+
+        if [[ "$ALL_NS" == "true" ]]; then
+          echo "$PODS" | while IFS='/' read -r ns name; do
+            echo "  Deleting pod $name in namespace $ns"
+            kubectl delete pod "$name" --namespace "$ns"
+          done
+        else
+          echo "$PODS" | while read -r name; do
+            echo "  Deleting pod $name"
+            kubectl delete pod "$name" $NS_FLAG
+          done
+        fi
+
+        echo "Done."

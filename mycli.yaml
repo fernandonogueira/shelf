@@ -1,4 +1,4 @@
-shelfVersion: 1
+schemaVersion: 1
 name: fshelf
 description: Personal command libraries.
 libraries:
@@ -8,3 +8,7 @@ libraries:
     path: kubernetes
     aliases:
       - k
+  dir:
+    name: Directory
+    description: Directory utility commands.
+    path: dir
