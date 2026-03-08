@@ -3,7 +3,7 @@ kind: command
 metadata:
   name: Delete Pods
   slug: delete-pods
-  description: Interactively select and delete pods using fzf. Optionally pre-filter by status (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
+  description: Interactively select pod statuses via fzf, then delete all pods matching the selected statuses.
   tags:
     - kubernetes
     - pods
@@ -18,10 +18,6 @@ defaults:
 policy:
   requireConfirmation: true
 args:
-  positional:
-    - name: status
-      description: Optional pod status to pre-filter (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
-      required: false
   flags:
     - name: namespace
       short: "n"
@@ -36,11 +32,10 @@ args:
       description: Show what would be deleted without deleting.
       type: bool
 steps:
-  - name: delete-pods-interactive
+  - name: delete-pods-by-status
     run: |
         set -euo pipefail
 
-        STATUS='{{.args.status}}'
         NS='{{.args.namespace}}'
         ALL_NS='{{index .args "all-namespaces"}}'
         DRY_RUN='{{index .args "dry-run"}}'
@@ -61,43 +56,50 @@ steps:
           exit 0
         fi
 
-        # --- optional status pre-filter ---
-        if [[ -n "$STATUS" ]]; then
-          if [[ "$ALL_NS" == "true" ]]; then
-            POD_LIST=$(echo "$POD_LIST" | awk -v s="$STATUS" '$4 == s')
-          else
-            POD_LIST=$(echo "$POD_LIST" | awk -v s="$STATUS" '$3 == s')
-          fi
-
-          if [[ -z "$POD_LIST" ]]; then
-            echo "No pods found with status '$STATUS'."
-            exit 0
-          fi
-        fi
-
-        # --- interactive selection with fzf ---
+        # --- extract unique statuses ---
         if [[ "$ALL_NS" == "true" ]]; then
-          FZF_HEADER="NAMESPACE | NAME | READY | STATUS | RESTARTS | AGE"
+          STATUS_COL=4
         else
-          FZF_HEADER="NAME | READY | STATUS | RESTARTS | AGE"
+          STATUS_COL=3
         fi
 
-        SELECTED=$(echo "$POD_LIST" | fzf --multi --header="$FZF_HEADER") || {
-          echo "No pods selected."
+        STATUSES=$(echo "$POD_LIST" | awk -v col="$STATUS_COL" '{print $col}' | sort -u)
+
+        # --- interactive status selection with fzf ---
+        SELECTED_STATUSES=$(echo "$STATUSES" | fzf --multi --header="Select status(es) to delete") || {
+          echo "No statuses selected."
           exit 0
         }
 
-        if [[ -z "$SELECTED" ]]; then
-          echo "No pods selected."
+        if [[ -z "$SELECTED_STATUSES" ]]; then
+          echo "No statuses selected."
           exit 0
         fi
 
-        POD_COUNT=$(echo "$SELECTED" | wc -l | tr -d ' ')
+        # --- filter pods matching selected statuses ---
+        MATCHING_PODS=""
+        while IFS= read -r status; do
+          MATCHED=$(echo "$POD_LIST" | awk -v col="$STATUS_COL" -v s="$status" '$col == s')
+          if [[ -n "$MATCHED" ]]; then
+            if [[ -n "$MATCHING_PODS" ]]; then
+              MATCHING_PODS="$MATCHING_PODS"$'\n'"$MATCHED"
+            else
+              MATCHING_PODS="$MATCHED"
+            fi
+          fi
+        done <<< "$SELECTED_STATUSES"
+
+        if [[ -z "$MATCHING_PODS" ]]; then
+          echo "No pods found matching the selected statuses."
+          exit 0
+        fi
+
+        POD_COUNT=$(echo "$MATCHING_PODS" | wc -l | tr -d ' ')
 
         # --- dry-run mode ---
         if [[ "$DRY_RUN" == "true" ]]; then
           echo "[dry-run] Would delete $POD_COUNT pod(s):"
-          echo "$SELECTED" | while read -r line; do
+          echo "$MATCHING_PODS" | while IFS= read -r line; do
             if [[ "$ALL_NS" == "true" ]]; then
               ns=$(echo "$line" | awk '{print $1}')
               name=$(echo "$line" | awk '{print $2}')
@@ -110,10 +112,10 @@ steps:
           exit 0
         fi
 
-        # --- delete selected pods ---
+        # --- delete matching pods ---
         echo "Deleting $POD_COUNT pod(s)..."
 
-        echo "$SELECTED" | while read -r line; do
+        echo "$MATCHING_PODS" | while IFS= read -r line; do
           if [[ "$ALL_NS" == "true" ]]; then
             ns=$(echo "$line" | awk '{print $1}')
             name=$(echo "$line" | awk '{print $2}')
