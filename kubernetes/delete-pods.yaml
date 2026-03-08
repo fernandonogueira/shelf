@@ -1,9 +1,9 @@
 schemaVersion: 1
 kind: command
 metadata:
-  name: Delete Pods by Status
+  name: Delete Pods
   slug: delete-pods
-  description: Delete pods filtered by status (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
+  description: Interactively select and delete pods using fzf. Optionally pre-filter by status (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
   tags:
     - kubernetes
     - pods
@@ -12,6 +12,7 @@ metadata:
     - dp
 dependencies:
   - kubectl
+  - fzf
 defaults:
   shell: /bin/bash
 policy:
@@ -19,8 +20,8 @@ policy:
 args:
   positional:
     - name: status
-      description: Pod status to filter (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
-      required: true
+      description: Optional pod status to pre-filter (e.g., Error, CrashLoopBackOff, Completed, Terminating, ImagePullBackOff).
+      required: false
   flags:
     - name: namespace
       short: "n"
@@ -35,7 +36,7 @@ args:
       description: Show what would be deleted without deleting.
       type: bool
 steps:
-  - name: delete-pods-by-status
+  - name: delete-pods-interactive
     run: |
         set -euo pipefail
 
@@ -52,40 +53,77 @@ steps:
           NS_FLAG="--namespace $NS"
         fi
 
-        # --- find matching pods ---
-        # Use the STATUS column (3rd column, or 4th with --all-namespaces) to filter.
-        # This handles both pod phases and container statuses like CrashLoopBackOff.
+        # --- get pods ---
+        POD_LIST=$(kubectl get pods $NS_FLAG --no-headers 2>/dev/null || true)
+
+        if [[ -z "$POD_LIST" ]]; then
+          echo "No pods found."
+          exit 0
+        fi
+
+        # --- optional status pre-filter ---
+        if [[ -n "$STATUS" ]]; then
+          if [[ "$ALL_NS" == "true" ]]; then
+            POD_LIST=$(echo "$POD_LIST" | awk -v s="$STATUS" '$4 == s')
+          else
+            POD_LIST=$(echo "$POD_LIST" | awk -v s="$STATUS" '$3 == s')
+          fi
+
+          if [[ -z "$POD_LIST" ]]; then
+            echo "No pods found with status '$STATUS'."
+            exit 0
+          fi
+        fi
+
+        # --- interactive selection with fzf ---
         if [[ "$ALL_NS" == "true" ]]; then
-          PODS=$(kubectl get pods $NS_FLAG --no-headers 2>/dev/null | awk -v s="$STATUS" '$4 == s {print $1 "/" $2}' || true)
+          FZF_HEADER="NAMESPACE | NAME | READY | STATUS | RESTARTS | AGE"
         else
-          PODS=$(kubectl get pods $NS_FLAG --no-headers 2>/dev/null | awk -v s="$STATUS" '$3 == s {print $1}' || true)
+          FZF_HEADER="NAME | READY | STATUS | RESTARTS | AGE"
         fi
 
-        if [[ -z "$PODS" ]]; then
-          echo "No pods found with status '$STATUS'."
+        SELECTED=$(echo "$POD_LIST" | fzf --multi --header="$FZF_HEADER") || {
+          echo "No pods selected."
+          exit 0
+        }
+
+        if [[ -z "$SELECTED" ]]; then
+          echo "No pods selected."
           exit 0
         fi
 
-        POD_COUNT=$(echo "$PODS" | wc -l | tr -d ' ')
+        POD_COUNT=$(echo "$SELECTED" | wc -l | tr -d ' ')
 
+        # --- dry-run mode ---
         if [[ "$DRY_RUN" == "true" ]]; then
-          echo "[dry-run] Found $POD_COUNT pod(s) with status '$STATUS':"
-          echo "$PODS"
+          echo "[dry-run] Would delete $POD_COUNT pod(s):"
+          echo "$SELECTED" | while read -r line; do
+            if [[ "$ALL_NS" == "true" ]]; then
+              ns=$(echo "$line" | awk '{print $1}')
+              name=$(echo "$line" | awk '{print $2}')
+              echo "  $name (namespace: $ns)"
+            else
+              name=$(echo "$line" | awk '{print $1}')
+              echo "  $name"
+            fi
+          done
           exit 0
         fi
 
-        echo "Deleting $POD_COUNT pod(s) with status '$STATUS'..."
+        # --- delete selected pods ---
+        echo "Deleting $POD_COUNT pod(s)..."
 
-        if [[ "$ALL_NS" == "true" ]]; then
-          echo "$PODS" | while IFS='/' read -r ns name; do
+        echo "$SELECTED" | while read -r line; do
+          if [[ "$ALL_NS" == "true" ]]; then
+            ns=$(echo "$line" | awk '{print $1}')
+            name=$(echo "$line" | awk '{print $2}')
             echo "  Deleting pod $name in namespace $ns"
             kubectl delete pod "$name" --namespace "$ns"
-          done
-        else
-          echo "$PODS" | while read -r name; do
+          else
+            name=$(echo "$line" | awk '{print $1}')
             echo "  Deleting pod $name"
             kubectl delete pod "$name" $NS_FLAG
-          done
-        fi
+          fi
+        done
 
         echo "Done."
